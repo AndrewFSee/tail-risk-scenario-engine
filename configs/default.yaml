@@ -1,0 +1,37 @@
+# Default configuration for the tail risk engine.
+portfolio:
+  tickers: [SPY, QQQ, TLT, GLD, XLE]
+  weights: [0.40, 0.25, 0.20, 0.10, 0.05]
+  start: "2007-01-01"   # include 2008 GFC for historical-replay scenarios
+  end: null  # null = today
+
+simulation:
+  n_paths: 20000
+  horizon_days: 21
+  seed: 42
+  marginal: student_t        # one of: normal, student_t, gpd_evt
+  volatility: garch          # one of: constant, garch
+  regime: markov_2state      # one of: none, markov_2state
+  dependence: student_t_copula  # one of: gaussian, student_t_copula
+
+risk:
+  confidence_levels: [0.95, 0.99]
+
+optimization:
+  enabled: true
+  objective: min_cvar
+  cvar_alpha: 0.95
+  long_only: true
+  max_weight: 0.5
+
+hedging:
+  enabled: true
+  instruments:
+    - kind: put
+      underlying: SPY
+      moneyness: 0.95
+      tenor_days: 30
+      premium_pct: 0.012   # premium as % of notional
+    - kind: inverse_etf
+      ticker: SPY        # underlying being shorted (-1x exposure)
+      allocation: 0.05

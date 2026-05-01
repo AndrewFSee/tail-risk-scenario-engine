@@ -36,12 +36,12 @@ data/external/
 *.h5
 *.hdf5
 
-# Model artifacts
-models/
-checkpoints/
-runs/
-mlruns/
-wandb/
+# Model artifacts (top-level only — do NOT match src/tailrisk/models/)
+/models/
+/checkpoints/
+/runs/
+/mlruns/
+/wandb/
 
 # Environment
 .env

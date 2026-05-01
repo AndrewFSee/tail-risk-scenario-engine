@@ -1,0 +1,8 @@
+name: gfc_2008
+description: "Replay 2008 GFC window: Sep 2008 - Mar 2009 returns bootstrapped."
+type: historical
+window:
+  start: "2008-09-01"
+  end: "2009-03-31"
+bootstrap: block
+block_size: 5

@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tailrisk"
+version = "0.1.0"
+description = "Tail risk scenario engine for equity portfolios: fat tails, GARCH, regime switching, CVaR optimization, hedging."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Andrew" }]
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "scipy>=1.11",
+    "statsmodels>=0.14",
+    "arch>=6.3",
+    "cvxpy>=1.5",
+    "copulas>=0.11",
+    "yfinance>=0.2.40",
+    "plotly>=5.20",
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "typer>=0.12",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+app = ["streamlit>=1.33"]
+llm = ["openai>=1.30"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.4", "mypy>=1.10"]
+
+[project.scripts]
+tailrisk = "tailrisk.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

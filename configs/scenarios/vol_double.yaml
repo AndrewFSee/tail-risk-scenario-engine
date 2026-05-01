@@ -1,0 +1,7 @@
+name: vol_double
+description: "Parametric shock: double conditional volatility for all assets."
+type: parametric
+shocks:
+  vol_multiplier: 2.0
+  mean_shift_bps: -10
+  correlation_floor: 0.8   # force pairwise correlations to at least this in stress
