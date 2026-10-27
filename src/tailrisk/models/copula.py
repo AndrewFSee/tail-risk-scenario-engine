@@ -33,7 +33,7 @@ class GaussianCopula:
     def fit(cls, x: np.ndarray) -> "GaussianCopula":
         u = _to_uniform(x)
         z = stats.norm.ppf(u)
-        return cls(corr=np.corrcoef(z, rowvar=False))
+        return cls(corr=np.atleast_2d(np.corrcoef(z, rowvar=False)))  # 1 asset: corrcoef gives a scalar
 
     def sample(self, n: int, rng: np.random.Generator) -> np.ndarray:
         d = self.corr.shape[0]
@@ -52,7 +52,7 @@ class StudentTCopula:
         u = _to_uniform(x)
         # Profile likelihood over df with corr from Gaussian-transformed data
         z = stats.norm.ppf(u)
-        corr = np.corrcoef(z, rowvar=False)
+        corr = np.atleast_2d(np.corrcoef(z, rowvar=False))
         best_df, best_ll = float(df_grid[0]), -np.inf
         for nu in df_grid:
             ll = _t_copula_loglik(u, corr, nu)

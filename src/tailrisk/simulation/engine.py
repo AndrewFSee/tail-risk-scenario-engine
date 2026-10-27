@@ -136,7 +136,11 @@ class MonteCarloEngine:
             omega = np.array([g.omega for g in m.garch])
             alpha = np.array([g.alpha for g in m.garch])
             beta = np.array([g.beta for g in m.garch])
-            asset_means = np.array([g.mean for g in m.garch])
+            # Drift is the sample mean, not the GARCH fit's ``mu``: under a Student-t
+            # likelihood ``mu`` is a robust location estimate that sits near the median,
+            # which for negatively skewed equity returns is ~2.5x the arithmetic mean
+            # (SPY 2007-2026: 10.0bp vs 4.1bp a day) and inflated 21-day drift to match.
+            asset_means = m.mean
             h_prev = np.tile(np.array([g.last_variance for g in m.garch]), (n_paths, 1))
             eps_prev = np.tile(np.array([g.last_resid for g in m.garch]), (n_paths, 1))
         else:

@@ -63,3 +63,25 @@ def test_per_path_garch_produces_path_specific_volatility():
         f"Expected per-path vol dispersion; got spread={spread:.4f} "
         f"vs median={median_vol:.4f}"
     )
+
+
+def test_garch_drift_is_sample_mean_not_t_location():
+    """Regression: GARCH-t ``mu`` is a robust (median-like) location; for skewed returns
+    it differs from the mean, and using it as drift inflated simulated returns ~2.5x."""
+    from tailrisk.models.garch import fit_garch
+
+    rng = np.random.default_rng(3)
+    n = 3000
+    # mostly small gains, occasional large losses: location > mean
+    r = rng.standard_t(df=5, size=n) * 0.008 + 0.001 - (rng.random(n) < 0.03) * 0.04
+    rets = pd.DataFrame({"A": r})
+    horizon = 10
+    assert fit_garch(rets["A"]).mean - rets["A"].mean() > 0.0008  # the gap this test is about
+    cfg = EngineConfig(
+        portfolio=PortfolioConfig(tickers=["A"], weights=[1.0], start="2020-01-01"),
+        simulation=SimulationConfig(n_paths=4000, horizon_days=horizon, seed=2, marginal="student_t",
+                                    volatility="garch", regime="none", dependence="gaussian"),
+    )
+    sim = MonteCarloEngine(cfg, fit_models(rets, cfg)).run()
+    simulated = sim.asset_returns.sum(axis=1).mean()
+    assert simulated == pytest.approx(horizon * rets["A"].mean(), abs=0.004)
