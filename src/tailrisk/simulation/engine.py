@@ -165,11 +165,18 @@ class MonteCarloEngine:
             start = m.regime.current_probs() if cfg.simulation.regime_start == "current" else None
             regime_states = m.regime.simulate_paths(n_paths, horizon, rng, start_probs=start)
             crisis = m.regime.crisis_state
-            crisis_mult = float(m.regime.sigmas[crisis] / m.regime.sigmas[1 - crisis])
+            # Volatility multiplier per regime, relative to the regime mix the GARCH state already
+            # reflects. GARCH variance on a stressed day is already high, so stacking the full
+            # crisis/calm vol ratio on top double-counts: in walk-forward tests, months that
+            # started in the crisis regime got a 95% VaR ~4.5x the realized volatility. So a
+            # path's vol is only raised for moves into a more stressed state than today's.
+            sig = np.asarray(m.regime.sigmas, dtype=float)
+            today = m.regime.current_probs() if start is not None else m.regime.stationary_distribution()
+            state_mult = np.maximum(1.0, sig / float(today @ sig))
         else:
             regime_states = np.zeros((n_paths, horizon), dtype=np.int64)
             crisis = -1
-            crisis_mult = 1.0
+            state_mult = np.ones(1)
 
         # 3. Marginal standardization. We want unit-variance innovations going
         #    into the GARCH recursion, so normalize Student-t draws by their
@@ -196,7 +203,6 @@ class MonteCarloEngine:
             # the copula of its current regime — this models correlation
             # breakdown during stress (Student-t copula in crisis tends to have
             # higher correlation and stronger tail dependence).
-            in_crisis_t = regime_states[:, t] == crisis                # (n_paths,)
             if m.copula_by_regime is not None and crisis >= 0:
                 u = np.empty((n_paths, n_assets))
                 for k, cop in enumerate(m.copula_by_regime):
@@ -215,8 +221,8 @@ class MonteCarloEngine:
                 cap = float(cfg.simulation.max_innovation_z)
                 z = np.clip(z, -cap, cap)
 
-            # Regime crisis amplifies conditional std; mean-shift could go here too.
-            vol_mult = np.where(in_crisis_t, crisis_mult, 1.0)[:, None]  # (n_paths, 1)
+            # Regime amplifies conditional std (only above today's regime mix, see above).
+            vol_mult = state_mult[regime_states[:, t]][:, None] if crisis >= 0 else 1.0
 
             sigma_t = np.sqrt(h_t) * vol_mult                          # (n_paths, n_assets)
             eps_t = sigma_t * z

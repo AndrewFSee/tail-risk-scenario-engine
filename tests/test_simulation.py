@@ -133,3 +133,28 @@ def test_regime_paths_start_from_given_probabilities():
     prev, nxt = long_run[:, :-1].ravel(), long_run[:, 1:].ravel()
     assert nxt[prev == 0].mean() == pytest.approx(0.02, abs=0.003)
     assert nxt[prev == 1].mean() == pytest.approx(0.90, abs=0.01)
+
+
+def test_regime_vol_boost_is_relative_to_today():
+    """On a crisis day GARCH vol is already high; the regime must not stack its full crisis/calm
+    ratio on top (walk-forward: crisis-start months had 95% VaR ~4.5x realized vol). Starting calm,
+    moves into crisis still raise vol."""
+    from tailrisk.models import RegimeFit
+
+    rets = _garch_returns(n=1500)
+    cfg = EngineConfig(
+        portfolio=PortfolioConfig(tickers=["A", "B"], weights=[0.5, 0.5], start="2020-01-01"),
+        simulation=SimulationConfig(n_paths=8000, horizon_days=21, seed=4, volatility="garch",
+                                    regime="none", dependence="gaussian"),
+    )
+    models = fit_models(rets, cfg)
+    base = MonteCarloEngine(cfg, models).run().portfolio_pnl.std()
+    sticky = np.array([[0.95, 0.05], [0.05, 0.95]])
+    for today, expect_boost in (([0.0, 1.0], False), ([1.0, 0.0], True)):
+        models.regime = RegimeFit(means=np.zeros(2), sigmas=np.array([0.01, 0.03]), transition=sticky,
+                                  smoothed_probs=np.array([today]))
+        std = MonteCarloEngine(cfg, models).run().portfolio_pnl.std()
+        if expect_boost:
+            assert std > base * 1.1
+        else:
+            assert std == pytest.approx(base, rel=0.05)
