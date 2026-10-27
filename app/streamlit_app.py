@@ -63,11 +63,11 @@ with col2:
 
 st.plotly_chart(
     loss_distribution_figure(sim.portfolio_pnl, m.var, m.cvar),
-    use_container_width=True,
+    width="stretch",
 )
 st.plotly_chart(
     fan_chart_figure(sim.asset_paths, sim.weights, sim.tickers),
-    use_container_width=True,
+    width="stretch",
 )
 
 st.subheader("CVaR-optimal portfolio")
@@ -103,7 +103,7 @@ for spec in cfg.hedging.instruments:
         )
 
 rows = evaluate_hedges(sim.asset_returns, sim.weights, instruments)
-st.plotly_chart(hedge_comparison_figure(rows), use_container_width=True)
+st.plotly_chart(hedge_comparison_figure(rows), width="stretch")
 
 st.subheader("Ask a question")
 q = st.text_input(
@@ -132,7 +132,7 @@ if q:
                     result.metrics["var_95"],
                     result.metrics["cvar_95"],
                 ),
-                use_container_width=True,
+                width="stretch",
             )
         with st.expander("Parsed request"):
             st.write(result.request)
@@ -164,4 +164,4 @@ if st.button("Run backtest"):
         cols[0].metric("Kupiec p-value", f"{cov.kupiec_pvalue:.3f}")
         cols[1].metric("Christoffersen p-value", f"{cov.christoffersen_pvalue:.3f}")
         cols[2].metric("Conditional cov. p-value", f"{cov.cc_pvalue:.3f}")
-    st.plotly_chart(backtest_figure(bt), use_container_width=True)
+    st.plotly_chart(backtest_figure(bt), width="stretch")
