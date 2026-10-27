@@ -92,7 +92,8 @@ def hedge(
 ) -> None:
     """Compare hedge variants vs. the unhedged portfolio."""
     from .data import load_prices, log_returns
-    from .hedging import InverseETF, PutOption, evaluate_hedges
+    from .data import latest_vix
+    from .hedging import build_hedges, evaluate_hedges
     from .simulation import MonteCarloEngine, fit_models
 
     cfg = EngineConfig.from_yaml(config)
@@ -101,27 +102,10 @@ def hedge(
     models = fit_models(rets, cfg)
     sim = MonteCarloEngine(cfg, models).run()
 
-    instruments: list = []
-    ticker_idx = {t: i for i, t in enumerate(sim.tickers)}
-    for spec in cfg.hedging.instruments:
-        if spec.kind == "put" and spec.underlying in ticker_idx:
-            instruments.append(
-                PutOption(
-                    asset_index=ticker_idx[spec.underlying],
-                    moneyness=spec.moneyness or 0.95,
-                    premium_pct=spec.premium_pct or 0.012,
-                )
-            )
-        elif spec.kind == "inverse_etf" and spec.ticker in ticker_idx:
-            instruments.append(
-                InverseETF(
-                    asset_index=ticker_idx[spec.ticker],
-                    allocation=spec.allocation or 0.05,
-                )
-            )
-
+    vix = latest_vix()
+    instruments = build_hedges(cfg.hedging.instruments, sim.tickers, implied_vol=vix)
     rows = evaluate_hedges(sim.asset_returns, sim.weights, instruments)
-    table = Table(title="Hedge comparison")
+    table = Table(title="Hedge comparison" + (f"  (puts priced at VIX {vix:.1%})" if vix else ""))
     table.add_column("strategy")
     table.add_column("E[R]")
     table.add_column("VaR 95%")
@@ -132,6 +116,35 @@ def hedge(
             r.name, f"{r.expected_return:.3%}", f"{r.var_95:.3%}",
             f"{r.cvar_95:.3%}", f"{r.cvar_99:.3%}",
         )
+    console.print(table)
+
+
+
+@app.command()
+def stress(
+    config: Path = typer.Option(Path("configs/default.yaml"), "--config", "-c"),
+    scenarios: Path = typer.Option(Path("configs/scenarios"), help="Folder of scenario YAMLs."),
+) -> None:
+    """Run every stress scenario in a folder next to the unstressed baseline."""
+    from .data import load_prices, log_returns
+    from .risk import tail_metrics
+    from .simulation import MonteCarloEngine, fit_models
+    from .stress import load_scenario, run_scenario
+
+    cfg = EngineConfig.from_yaml(config)
+    rets = log_returns(load_prices(cfg.portfolio.tickers, cfg.portfolio.start, cfg.portfolio.end))
+    models = fit_models(rets, cfg)
+    rows = [("baseline", "fitted models, no shock", MonteCarloEngine(cfg, models).run().portfolio_pnl)]
+    for path in sorted(Path(scenarios).glob("*.yaml")):
+        scen = load_scenario(path)
+        rows.append((scen.name, scen.description, run_scenario(scen, rets, models, cfg)))
+
+    table = Table(title=f"Stress scenarios  (horizon={cfg.simulation.horizon_days}d, paths={cfg.simulation.n_paths})")
+    for col in ("scenario", "mean", "VaR 95%", "CVaR 95%", "VaR 99%", "CVaR 99%"):
+        table.add_column(col)
+    for name, _desc, pnl in rows:
+        m95, m99 = tail_metrics(pnl, alpha=0.95), tail_metrics(pnl, alpha=0.99)
+        table.add_row(name, f"{m95.mean:.2%}", f"{m95.var:.2%}", f"{m95.cvar:.2%}", f"{m99.var:.2%}", f"{m99.cvar:.2%}")
     console.print(table)
 
 
@@ -175,6 +188,38 @@ def backtest(
         )
         table.add_row("Conditional cov. LR (p)", f"{cov.cc_lr:.2f}  ({cov.cc_pvalue:.3f})")
         console.print(table)
+
+
+
+@app.command()
+def validate(
+    config: Path = typer.Option(Path("configs/default.yaml"), "--config", "-c"),
+    min_train: int = typer.Option(1260, help="Observations before the first test date (~5 years)."),
+    paths: int = typer.Option(2000, help="Simulated paths per test date."),
+    out: Path = typer.Option(Path("artifacts/engine_walkforward.csv"), help="Per-date results CSV."),
+) -> None:
+    """Walk-forward check of the full engine at its horizon: refit on data up to each date,
+    simulate, compare predicted VaR with the realized portfolio return. Slow."""
+    from .backtest import engine_walkforward
+    from .data import load_prices, log_returns
+
+    cfg = EngineConfig.from_yaml(config)
+    rets = log_returns(load_prices(cfg.portfolio.tickers, cfg.portfolio.start, cfg.portfolio.end))
+
+    def progress(i, n, row):
+        if i == 1 or i % 12 == 0 or i == n:
+            console.log(f"{i}/{n}  {row['date']:%Y-%m-%d}  VaR95 {row['var_95']:.2%}  realized {row['realized']:+.2%}")
+
+    res = engine_walkforward(rets, cfg, min_train=min_train, n_paths=paths, progress=progress)
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    res.frame.to_csv(out)
+    for label, cov in [("95%", res.coverage_95), ("99%", res.coverage_99)]:
+        verdict = "[green]PASS[/green]" if cov.passes() else "[red]FAIL[/red]"
+        console.print(f"{cfg.simulation.horizon_days}-day VaR {label} {verdict}: {cov.breaches} breaches in {cov.n} "
+                      f"(expected {cov.expected_breaches:.1f}); Kupiec p={cov.kupiec_pvalue:.3f}, "
+                      f"Christoffersen p={cov.christoffersen_pvalue:.3f}")
+    console.print(f"Risk tracking: rank corr(predicted CVaR 95%, realized |return|) = {res.risk_tracking:+.2f}")
+    console.print(f"Per-date results: {out}")
 
 
 if __name__ == "__main__":  # pragma: no cover

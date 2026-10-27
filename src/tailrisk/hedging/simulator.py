@@ -25,14 +25,18 @@ def evaluate_hedges(
     weights: np.ndarray,
     hedges: list[PutOption | InverseETF],
 ) -> list[HedgeComparison]:
-    """Return per-hedge metrics including the unhedged baseline."""
+    """Return per-hedge metrics including the unhedged baseline.
+
+    Everything is in simple (money) returns of a buy-and-hold portfolio, because hedge payoffs
+    are money: adding a put's payoff to a *log* portfolio return overstates crash losses (a 50%
+    fall is -69% in logs), so the put would no longer floor the loss at its strike."""
     asset_terminal = asset_step_returns.sum(axis=1)            # log -> additive
-    base_pnl = asset_terminal @ weights
+    base_pnl = np.expm1(asset_terminal) @ weights              # simple buy-and-hold return
 
     results = [_summarize("unhedged", base_pnl)]
     for h in hedges:
         if isinstance(h, PutOption):
-            extra = h.payoff(asset_terminal)
+            extra = h.payoff(asset_terminal, horizon_days=asset_step_returns.shape[1])
             label = f"put_{h.moneyness:.2f}m"
         elif isinstance(h, InverseETF):
             extra = h.payoff_from_steps(asset_step_returns)

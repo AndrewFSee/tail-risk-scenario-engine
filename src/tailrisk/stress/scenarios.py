@@ -87,3 +87,64 @@ def load_scenario(path: str | Path) -> Scenario:
             correlation_floor=s.get("correlation_floor"),
         )
     raise ValueError(f"Unknown scenario type: {kind!r}")
+
+
+def _floor_correlation(corr: np.ndarray, floor: float) -> np.ndarray:
+    """Raise every off-diagonal correlation to at least ``floor``, then repair to a valid
+    correlation matrix (nearest PSD, unit diagonal)."""
+    from ..models.copula import _nearest_psd
+
+    out = np.array(corr, dtype=float, copy=True)
+    off = ~np.eye(out.shape[0], dtype=bool)
+    out[off] = np.maximum(out[off], floor)
+    out = _nearest_psd(out)
+    d = np.sqrt(np.diag(out))
+    return out / np.outer(d, d)
+
+
+def apply_parametric(models, scenario: ParametricScenario):
+    """A copy of fitted models with the scenario's shocks applied.
+
+    - ``vol_multiplier`` k scales volatility by k: with GARCH, omega and the starting variance by
+      k^2 and the last residual by k, so the whole variance path scales by k^2; without GARCH,
+      the marginal scales by k.
+    - ``mean_shift_bps`` is added to every asset's daily drift.
+    - ``correlation_floor`` raises pairwise copula correlations (all regimes) to at least that.
+    """
+    import copy
+
+    m = copy.deepcopy(models)
+    k = float(scenario.vol_multiplier)
+    if k != 1.0:
+        if m.garch is not None:
+            for g in m.garch:
+                g.omega *= k**2
+                g.last_variance *= k**2
+                g.last_resid *= k
+        else:
+            for mar in m.marginals:
+                mar.scale *= k
+    if scenario.mean_shift_bps:
+        m.mean = np.asarray(m.mean, dtype=float) + scenario.mean_shift_bps / 1e4
+    if scenario.correlation_floor is not None:
+        f = float(scenario.correlation_floor)
+        m.copula.corr = _floor_correlation(m.copula.corr, f)
+        for cop in m.copula_by_regime or []:
+            cop.corr = _floor_correlation(cop.corr, f)
+    return m
+
+
+def run_scenario(scenario: Scenario, returns: pd.DataFrame, models, cfg) -> np.ndarray:
+    """Simulated ``horizon``-day portfolio log returns under a scenario, shape (n_paths,).
+
+    Historical scenarios block-bootstrap their window; parametric ones re-run the Monte Carlo
+    engine on shocked models (same seed as the baseline, so differences are the shock)."""
+    from ..simulation import MonteCarloEngine
+
+    w = np.asarray(cfg.portfolio.weights, dtype=float)
+    if isinstance(scenario, HistoricalScenario):
+        rng = np.random.default_rng(cfg.simulation.seed)
+        paths = scenario.sample_paths(returns[models.tickers], cfg.simulation.n_paths,
+                                      cfg.simulation.horizon_days, rng)
+        return paths.sum(axis=1) @ w
+    return MonteCarloEngine(cfg, apply_parametric(models, scenario)).run().portfolio_pnl

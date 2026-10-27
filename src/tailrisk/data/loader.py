@@ -44,3 +44,17 @@ def log_returns(prices: pd.DataFrame) -> pd.DataFrame:
 
 def simple_returns(prices: pd.DataFrame) -> pd.DataFrame:
     return prices.pct_change().dropna(how="any")
+
+
+def latest_vix() -> float | None:
+    """Latest VIX close as an annualized decimal (e.g. 0.18), or None if unavailable.
+
+    Used as the implied vol for pricing index puts: the VIX is a 30-day, skew-inclusive
+    measure, so it sits near the implied vol of a ~5% out-of-the-money 1-month put."""
+    try:
+        import yfinance as yf  # noqa: WPS433
+
+        closes = yf.download("^VIX", period="10d", auto_adjust=False, progress=False)["Close"].dropna()
+        return float(np.asarray(closes).ravel()[-1]) / 100.0 if len(closes) else None
+    except Exception:  # noqa: BLE001 - network or parsing problems: caller falls back
+        return None

@@ -13,7 +13,8 @@ own with the same seed) feeds every output, written to ``<HUB_DATA_DIR>/tailrisk
 * ``fan``       portfolio cumulative return percentiles by day (5/25/50/75/95)
 * ``pnl_hist``  histogram of terminal P&L, unhedged and with each hedge
 * ``summary``   (JSON) tail metrics, the same metrics from history, hedge
-                comparison, CVaR-optimal weights, current crisis-regime probability
+                comparison (puts priced at the current VIX), stress scenarios,
+                CVaR-optimal weights, current crisis-regime probability
 """
 
 from __future__ import annotations
@@ -33,7 +34,9 @@ import pandas as pd  # noqa: E402
 
 from tailrisk.config import EngineConfig  # noqa: E402
 from tailrisk.data import load_prices, log_returns  # noqa: E402
-from tailrisk.hedging import InverseETF, PutOption, evaluate_hedges  # noqa: E402
+from tailrisk.data import latest_vix  # noqa: E402
+from tailrisk.hedging import build_hedges, evaluate_hedges  # noqa: E402
+from tailrisk.stress import load_scenario, run_scenario  # noqa: E402
 from tailrisk.optimization import optimize_cvar  # noqa: E402
 from tailrisk.risk import tail_metrics  # noqa: E402
 from tailrisk.simulation import MonteCarloEngine, fit_models  # noqa: E402
@@ -56,19 +59,6 @@ FAN_PCTS = [5, 25, 50, 75, 95]
 
 def log(msg: str) -> None:
     print(msg, flush=True)
-
-
-def build_instruments(cfg: EngineConfig, tickers: list[str]) -> list:
-    """Same mapping from config to hedge instruments as ``tailrisk hedge``."""
-    idx = {t: i for i, t in enumerate(tickers)}
-    out = []
-    for spec in cfg.hedging.instruments:
-        if spec.kind == "put" and spec.underlying in idx:
-            out.append(PutOption(asset_index=idx[spec.underlying], moneyness=spec.moneyness or 0.95,
-                                 premium_pct=spec.premium_pct or 0.012))
-        elif spec.kind == "inverse_etf" and spec.ticker in idx:
-            out.append(InverseETF(asset_index=idx[spec.ticker], allocation=spec.allocation or 0.05))
-    return out
 
 
 def _metrics(pnl: np.ndarray, levels) -> dict:
@@ -103,7 +93,16 @@ def main() -> int:
     hist_h = pd.Series(hist).rolling(horizon).sum().dropna().to_numpy()
 
     # -- hedges and CVaR-optimal weights on the same scenarios -----------
-    hedges = evaluate_hedges(sim.asset_returns, w, build_instruments(cfg, sim.tickers))
+    vix = latest_vix()
+    hedges = evaluate_hedges(sim.asset_returns, w, build_hedges(cfg.hedging.instruments, sim.tickers,
+                                                                implied_vol=vix))
+
+    # -- stress scenarios (configs/scenarios/*.yaml) on the same fitted models
+    stress = [{"name": "baseline", "description": "fitted models, no shock", **_metrics(sim.portfolio_pnl, levels)}]
+    for path in sorted((PROJECT_ROOT / "configs" / "scenarios").glob("*.yaml")):
+        scen = load_scenario(path)
+        stress.append({"name": scen.name, "description": scen.description,
+                       **_metrics(run_scenario(scen, rets, models, cfg), levels)})
     opt = None
     if cfg.optimization.enabled:
         res = optimize_cvar(sim.asset_returns.sum(axis=1), alpha=cfg.optimization.cvar_alpha,
@@ -141,6 +140,8 @@ def main() -> int:
         "hedges": [{"name": h.name, "expected_return": h.expected_return, "var_95": h.var_95,
                     "cvar_95": h.cvar_95, "cvar_99": h.cvar_99} for h in hedges],
         "optimal": opt,
+        "hedge_implied_vol": vix,
+        "stress": stress,
         "crisis_regime": crisis,
     }
     store.save_frame(MODULE, "fan", fan.astype(np.float64))

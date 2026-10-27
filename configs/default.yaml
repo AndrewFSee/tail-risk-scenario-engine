@@ -31,7 +31,7 @@ hedging:
       underlying: SPY
       moneyness: 0.95
       tenor_days: 30
-      premium_pct: 0.012   # premium as % of notional
+      # premium: Black-Scholes at the current VIX (set implied_vol, or premium_pct to fix it)
     - kind: inverse_etf
       ticker: SPY        # underlying being shorted (-1x exposure)
       allocation: 0.05
