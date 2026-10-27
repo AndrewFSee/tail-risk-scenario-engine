@@ -42,6 +42,7 @@ data/external/
 /runs/
 /mlruns/
 /wandb/
+/artifacts/
 
 # Environment
 .env

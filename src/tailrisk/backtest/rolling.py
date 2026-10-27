@@ -89,16 +89,15 @@ def rolling_var_backtest(
     realized = r.values[min_train:]
     var_curves = {a: np.empty(n_test) for a in alphas}
 
-    # State carried between refits.
+    # State carried between refits: the variance forecast for the day being predicted.
     omega = alpha_p = beta_p = nu = mu = None
-    h_t: float | None = None
-    eps_t: float | None = None
+    h_fore: float | None = None
 
     for i in range(n_test):
         train_end = min_train + i
         if i == 0 or (i % refit_every == 0):
             # Refit on expanding window up to but not including the day we're
-            # predicting.
+            # predicting, then forecast that day from the last fitted state.
             train = r.iloc[:train_end] * 100.0  # arch wants percent
             am = arch_model(train, mean="Constant", vol="GARCH", p=1, q=1, dist="t")
             res = am.fit(disp="off")
@@ -108,20 +107,17 @@ def rolling_var_backtest(
             beta_p = float(p["beta[1]"])
             nu = float(p["nu"])
             mu = float(p["mu"]) / 100.0
-            h_t = float(res.conditional_volatility.iloc[-1] ** 2) / 1e4
-            eps_t = float(res.resid.iloc[-1]) / 100.0
+            h_last = float(res.conditional_volatility.iloc[-1] ** 2) / 1e4
+            eps_last = float(res.resid.iloc[-1]) / 100.0
+            h_fore = omega + alpha_p * eps_last**2 + beta_p * h_last
         else:
-            # Propagate state with the realized residual from t-1.
+            # Yesterday was forecast with h_fore; its realized residual updates the
+            # recursion: h_{t+1} = omega + alpha * eps_t^2 + beta * h_t.
             assert omega is not None and alpha_p is not None and beta_p is not None
-            r_prev = r.iloc[train_end - 1]
-            eps_prev = r_prev - mu
-            h_next = omega + alpha_p * eps_prev**2 + beta_p * h_t
-            h_t = h_next
-            eps_t = eps_prev
+            eps_prev = r.iloc[train_end - 1] - mu
+            h_fore = omega + alpha_p * eps_prev**2 + beta_p * h_fore
 
-        # Forecast h_{t+1} for the day at index `train_end` (= dates[i]).
-        h_forecast = omega + alpha_p * eps_t**2 + beta_p * h_t
-        sigma_forecast = float(np.sqrt(h_forecast))
+        sigma_forecast = float(np.sqrt(h_fore))
         for a in alphas:
             q = _t_quantile_unit_variance(a, nu)   # negative
             var_curves[a][i] = -(mu + sigma_forecast * q)

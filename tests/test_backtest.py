@@ -74,3 +74,51 @@ def test_rolling_var_backtest_runs():
     assert (res.predicted_var_95 > 0).all()
     assert (res.predicted_var_99 >= res.predicted_var_95).all()
     assert 0 <= res.coverage_95.breaches <= res.coverage_95.n
+
+
+def test_propagation_matches_arch_filter():
+    """Between refits the GARCH state must follow the standard recursion: with one fit and
+    only propagation afterwards, the forecasts equal arch's conditional volatility for the
+    same fixed parameters. (A previous version fed each shock in twice: errors up to ~23%.)"""
+    import pandas as pd
+    from arch import arch_model
+
+    from tailrisk.backtest.rolling import _t_quantile_unit_variance, rolling_var_backtest
+
+    rng = np.random.default_rng(0)
+    n, train = 1200, 500
+    w, a, b = 2e-6, 0.08, 0.9
+    h, e, r = w / (1 - a - b), 0.0, []
+    for _ in range(n):
+        h = w + a * e**2 + b * h
+        e = np.sqrt(h) * rng.standard_t(6) * np.sqrt(4 / 6)
+        r.append(0.0003 + e)
+    r = pd.Series(r, index=pd.bdate_range("2015-01-01", periods=n))
+
+    bt = rolling_var_backtest(r, min_train=train, refit_every=10_000)
+    fit = arch_model(r.iloc[:train] * 100, mean="Constant", vol="GARCH", p=1, q=1, dist="t").fit(disp="off")
+    sigma_true = arch_model(r * 100, mean="Constant", vol="GARCH", p=1, q=1, dist="t").fix(
+        fit.params).conditional_volatility.values[train:] / 100
+    q = _t_quantile_unit_variance(0.95, fit.params["nu"])
+    sigma_bt = (-bt.predicted_var_95 - fit.params["mu"] / 100) / q
+    np.testing.assert_allclose(sigma_bt, sigma_true, rtol=1e-6)
+
+
+def test_engine_walkforward_on_synthetic_data():
+    import pandas as pd
+
+    from tailrisk.backtest import engine_walkforward
+    from tailrisk.config import EngineConfig, PortfolioConfig, SimulationConfig
+
+    rng = np.random.default_rng(2)
+    rets = pd.DataFrame(rng.standard_t(6, size=(640, 2)) * 0.008, columns=["A", "B"],
+                        index=pd.bdate_range("2018-01-01", periods=640))
+    cfg = EngineConfig(portfolio=PortfolioConfig(tickers=["A", "B"], weights=[0.6, 0.4], start="2018-01-01"),
+                       simulation=SimulationConfig(horizon_days=21, volatility="garch", regime="none",
+                                                   dependence="gaussian"))
+    res = engine_walkforward(rets, cfg, min_train=500, n_paths=500)
+    assert len(res.frame) == 6                                   # (640 - 21 - 500) // 21 + 1
+    assert (res.frame["var_99"] > res.frame["var_95"]).all()
+    first = res.frame.index[0]
+    assert first == rets.index[500]                              # first test uses only the first 500 days
+    assert res.frame.loc[first, "realized"] == pytest.approx(rets.iloc[500:521].values.sum(axis=0) @ [0.6, 0.4])
