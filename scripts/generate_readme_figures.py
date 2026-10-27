@@ -20,8 +20,8 @@ import pandas as pd
 
 from tailrisk.backtest import rolling_var_backtest
 from tailrisk.config import EngineConfig
-from tailrisk.data import load_prices, log_returns
-from tailrisk.hedging import InverseETF, PutOption, evaluate_hedges
+from tailrisk.data import latest_vix, load_prices, log_returns
+from tailrisk.hedging import build_hedges, evaluate_hedges
 from tailrisk.optimization import optimize_cvar
 from tailrisk.simulation import MonteCarloEngine, fit_models
 
@@ -128,24 +128,7 @@ def main() -> None:
     plt.close(fig)
 
     # ---- 4. Hedge comparison ----
-    ticker_idx = {t: i for i, t in enumerate(sim.tickers)}
-    instruments: list = []
-    for spec in cfg.hedging.instruments:
-        if spec.kind == "put" and spec.underlying in ticker_idx:
-            instruments.append(
-                PutOption(
-                    asset_index=ticker_idx[spec.underlying],
-                    moneyness=spec.moneyness or 0.95,
-                    premium_pct=spec.premium_pct or 0.012,
-                )
-            )
-        elif spec.kind == "inverse_etf" and spec.ticker in ticker_idx:
-            instruments.append(
-                InverseETF(
-                    asset_index=ticker_idx[spec.ticker],
-                    allocation=spec.allocation or 0.05,
-                )
-            )
+    instruments = build_hedges(cfg.hedging.instruments, sim.tickers, implied_vol=latest_vix())
     rows = evaluate_hedges(sim.asset_returns, sim.weights, instruments)
     names = [r.name for r in rows]
     fig, ax = plt.subplots(figsize=(8, 4.5))

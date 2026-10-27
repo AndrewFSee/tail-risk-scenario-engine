@@ -34,9 +34,11 @@ engine is a deliberate, layered answer to those failure modes:
 ## Highlights
 
 ### 1 · Fat-tailed Monte Carlo with regime switching
-20,000 paths over a 21-day horizon, fit on 18 years of SPY/QQQ/TLT/GLD/XLE
-daily data. Tail thickness (CVaR 99% ≈ 14%) is driven by the t-copula plus
-crisis-state vol scaling — a vanilla normal-copula model gives ~8%.
+20,000 paths over a 21-day horizon, fit on SPY/QQQ/TLT/GLD/XLE daily data since
+2007. The simulated 21-day distribution matches the historical one where it
+matters: VaR 95% 5.4% (history 5.0%), CVaR 99% 14.2% (history 16.1%), excess
+kurtosis ~7-11 (history 7.6). Without the crisis regime the deep tail is far too
+thin (CVaR 99% ~10%).
 
 <p align="center">
   <img src="docs/images/fan_chart.png" width="80%"/>
@@ -53,28 +55,40 @@ under-emphasizes.
 
 ### 3 · Hedge strategies are scored on cost vs. tail protection
 Every hedge variant is run through the same simulated paths so trade-offs are
-honest: protective puts roughly halve the *deep* tail at a real expected-return
-cost; inverse-ETF allocations move the median much less but leave 99% CVaR
-nearly untouched.
+honest. Puts are priced with Black-Scholes at the current VIX, so their cost
+moves with the market. At VIX 17.7%, a 1-month 5% out-of-the-money SPY put on
+the whole portfolio cut CVaR 99% from 12.5% to 7.0% for 0.11% of expected
+return; a 5% inverse-ETF sleeve barely touched it (11.7%).
 
 <p align="center">
   <img src="docs/images/hedge_comparison.png" width="80%"/>
 </p>
 
-### 4 · Walk-forward backtest with regulatory coverage tests
-Refits a portfolio-level GARCH(1,1)-t every 63 days on an expanding window,
-forecasts 1-day VaR analytically, and scores breaches against the
-**Kupiec POF** test (unconditional coverage) and **Christoffersen** test
-(independence). On 4,111 OOS days:
+### 4 · Walk-forward validation with regulatory coverage tests
+**The full engine at its own horizon** (`tailrisk validate`): at each of 177
+non-overlapping 21-day windows since 2012, every model is refit on data up to
+that date only, 2,000 paths are simulated, and the predicted VaR is compared
+with the realized portfolio return.
+
+|                | breaches | expected | Kupiec p | Christoffersen p |
+|----------------|----------|----------|----------|------------------|
+| 21-day VaR 95% | 5        | 8.9      | 0.15 ✓   | 0.59 ✓           |
+| 21-day VaR 99% | 0        | 1.8      | 0.06 ✓   | 1.00 ✓           |
+
+Predicted risk tracks realized risk (rank correlation of predicted CVaR 95% with
+realized |return|: +0.36). The engine leans conservative: 5 breaches where 8.9
+were expected.
+
+**A 1-day stand-in** (`tailrisk backtest`): one GARCH(1,1)-t on the portfolio
+series, refit every 63 days, 1-day VaR on 4,235 out-of-sample days:
 
 |                | breach rate | nominal | Kupiec p | Christoffersen p |
 |----------------|-------------|---------|----------|------------------|
-| 95% VaR        | 6.23%       | 5.00%   | 0.000    | **0.78** ✓        |
-| 99% VaR        | 1.43%       | 1.00%   | 0.008    | **0.28** ✓        |
+| 95% VaR        | 5.95%       | 5.00%   | 0.006 ✗  | 1.00 ✓           |
+| 99% VaR        | 1.44%       | 1.00%   | 0.007 ✗  | 0.013 ✗          |
 
-The model captures volatility *dynamics* well (Christoffersen passes — no breach
-clustering) but tails are slightly thinner than reality (Kupiec rejects). That
-is exactly the kind of diagnostic this layer is designed to produce.
+At one day the simple model is slightly too thin-tailed, and its 99% breaches
+cluster: bad days come in runs it doesn't anticipate.
 
 <p align="center">
   <img src="docs/images/backtest.png" width="90%"/>
@@ -84,9 +98,10 @@ is exactly the kind of diagnostic this layer is designed to produce.
 The dashboard accepts plain English and routes it through a small interpreter
 into the simulation engine:
 
-> *"What is my loss if 2008 repeats?"* → historical replay, **CVaR 95% = 23.5%**
-> *"What if tech crashes 20%?"*       → asset shock on QQQ, **CVaR 95% = 21.6%**
-> *"What if volatility doubles?"*     → vol multiplier 2×, **CVaR 95% = 35.0%**
+> *"What is my loss if 2008 repeats?"* → historical replay, **CVaR 95% = 23.0%**
+> *"What if volatility doubles?"*     → vol multiplier 2× (plus a drift and correlation shock), **CVaR 95% = 26.4%**
+
+The same scenarios run from the CLI with `tailrisk stress`.
 
 ---
 
@@ -107,7 +122,7 @@ src/tailrisk/
 └── cli.py         `tailrisk` CLI (typer)
 app/streamlit_app.py    Interactive dashboard
 configs/                Default + stress-scenario YAMLs
-tests/                  15-test pytest suite
+tests/                  31-test pytest suite
 ```
 
 The design intent is **composability over monolith**: each statistical concern
@@ -128,7 +143,9 @@ pip install -e ".[app,dev]"
 tailrisk simulate --config configs/default.yaml
 tailrisk optimize --config configs/default.yaml
 tailrisk hedge    --config configs/default.yaml
+tailrisk stress   --config configs/default.yaml
 tailrisk backtest --config configs/default.yaml --min-train 750
+tailrisk validate --config configs/default.yaml   # full-engine walk-forward, ~5 min
 
 # Dashboard
 streamlit run app/streamlit_app.py
@@ -152,13 +169,28 @@ A few choices worth flagging for anyone reading the code:
   smoothed regime probabilities; if both regimes have enough observations a
   separate copula is fit per regime. At simulation time, the path's current
   regime selects which copula draws the dependence shock.
+- **Marginals and copulas are fitted on GARCH-standardized residuals.** Raw
+  returns are fat-tailed *because* of volatility clustering, which GARCH already
+  models; fitting the marginals on them counted the tails twice (SPY's raw-return
+  Student-t has df ~2.4, i.e. infinite kurtosis, and simulated kurtosis swung
+  between ~20 and ~120 from seed to seed).
+- **Regimes start from today.** Each path's regime chain starts from today's
+  estimated regime probabilities, not the long-run mix (which put ~20% of paths
+  in crisis on day one). The crisis volatility boost is relative to today's
+  regime: on a crisis day GARCH vol is already high, and stacking the full
+  crisis/calm ratio on it gave crisis-start months a 95% VaR ~4.5x realized vol.
+- **Drift is the sample mean.** The GARCH-t fit's `mu` is a robust location
+  estimate near the median, ~2.5x the mean for skewed equity returns.
+- **Hedges are scored in simple returns.** A put's payoff is money; adding it to a
+  log portfolio return overstates crash losses past the strike.
 - **Mean is added once.** Student-t marginals carry their own location
   parameter, so the engine subtracts `loc` before applying GARCH-scaled shocks
   to avoid double-counting drift — a subtle bug that quadrupled expected
   returns in an earlier draft.
-- **Backtest uses portfolio-level GARCH** (not per-asset + copula at every
-  step). For *coverage* validation this is the standard academic protocol and
-  it makes the walk-forward tractable.
+- **Two backtests.** `validate` refits the full engine at every test date (slow,
+  ~5 minutes); `backtest` uses one portfolio-level GARCH for 1-day VaR (fast).
+  The 1-day backtest's recursion between refits is checked against `arch`'s own
+  filter in the tests.
 - **`statsmodels` quirk.** Markov regression returns a column-stochastic
   transition matrix — the engine transposes and renormalizes so each row sums
   to 1.
@@ -171,7 +203,7 @@ A few choices worth flagging for anyone reading the code:
 - [ ] Real LLM backend behind the NL interpreter (currently a typed-pattern stub)
 - [ ] On-disk cache for `yfinance` so runs are reproducible offline
 - [ ] Expected Shortfall backtest (Acerbi–Székely Z-tests)
-- [ ] Multi-day VaR backtest (currently 1-day only)
+- [x] Multi-day VaR backtest (`tailrisk validate`, 21 days)
 
 ---
 
