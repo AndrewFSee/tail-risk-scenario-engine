@@ -49,6 +49,10 @@ class SimulationConfig(BaseModel):
     # per-path GARCH variance under very fat-tailed Student-t draws. Set to
     # None to disable. ~10 still allows >6-sigma events.
     max_innovation_z: float | None = 10.0
+    # Where the simulated regime chains start: today's estimated regime probabilities, or the
+    # model's long-run mix ("stationary", the pre-2026-10 behaviour: ~20% of paths in crisis
+    # on day one regardless of the market).
+    regime_start: Literal["current", "stationary"] = "current"
 
 
 class RiskConfig(BaseModel):
@@ -69,7 +73,8 @@ class HedgeInstrument(BaseModel):
     ticker: str | None = None
     moneyness: float | None = None
     tenor_days: int | None = None
-    premium_pct: float | None = None
+    premium_pct: float | None = None   # fixed premium; if unset, Black-Scholes at implied_vol
+    implied_vol: float | None = None   # annualized; if unset too, the current VIX is used
     allocation: float | None = None
 
 

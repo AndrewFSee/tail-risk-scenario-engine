@@ -6,7 +6,7 @@ and provide a forecast generator suitable for path simulation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -23,6 +23,9 @@ class GarchFit:
     last_variance: float      # h_T
     last_resid: float         # epsilon_T (standardized * sqrt(h_T))
     mean: float               # constant mean
+    # In-sample residuals divided by their conditional volatility: what is left once
+    # volatility clustering is removed. Marginals and copulas are fitted on these.
+    std_resid: np.ndarray = field(default_factory=lambda: np.zeros(0), repr=False)
 
     def simulate_variance_path(
         self,
@@ -69,6 +72,7 @@ def fit_garch(returns: pd.Series | np.ndarray) -> GarchFit:
     mean = float(p["mu"]) / 100.0
     last_variance = float(res.conditional_volatility.iloc[-1] ** 2) / 1e4
     last_resid = float(res.resid.iloc[-1]) / 100.0
+    std_resid = (res.resid / res.conditional_volatility).to_numpy(dtype=float)
     return GarchFit(
         omega=omega,
         alpha=alpha,
@@ -77,4 +81,5 @@ def fit_garch(returns: pd.Series | np.ndarray) -> GarchFit:
         last_variance=last_variance,
         last_resid=last_resid,
         mean=mean,
+        std_resid=std_resid,
     )

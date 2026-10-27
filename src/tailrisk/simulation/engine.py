@@ -6,10 +6,11 @@ return paths, then aggregates to portfolio P&L.
 The default pipeline is:
 
     1. Fit per-asset GARCH(1,1)-t   -> conditional volatility paths
-    2. Fit cross-asset Student-t copula on standardized residuals
-       -> dependence structure with tail co-movement
+    2. Fit Student-t marginals and a cross-asset Student-t copula on the GARCH
+       standardized residuals -> fat-tailed shocks with tail co-movement
     3. (Optional) Fit 2-state Markov regime model on the portfolio series
-       -> in crisis days, scale variance and floor correlation
+       -> paths start from today's regime probabilities; in crisis days, scale
+       variance and use the crisis-regime copula
     4. Draw uniforms from the copula, push through marginal quantile,
        multiply by simulated conditional vol, add mean.
 """
@@ -62,14 +63,22 @@ class SimulationResult:
 def fit_models(returns: pd.DataFrame, cfg: EngineConfig) -> FittedModels:
     """Fit all configured models on a returns panel."""
     tickers = list(returns.columns)
-    marginals = [fit_student_t(returns[c].values) for c in tickers]
     garch = (
         [fit_garch(returns[c]) for c in tickers] if cfg.simulation.volatility == "garch" else None
     )
-    if cfg.simulation.dependence == "student_t_copula":
-        cop: GaussianCopula | StudentTCopula = StudentTCopula.fit(returns.values)
+    # With GARCH, the innovations are what is left after volatility clustering, so the
+    # marginals and copula are fitted on standardized residuals. Fitting them on raw returns
+    # counts the fat tails twice (raw SPY returns give a Student-t with df ~2.4, i.e.
+    # infinite kurtosis; its standardized residuals give df ~5.4, matching GARCH's own nu).
+    if garch is not None:
+        innovations = np.column_stack([g.std_resid for g in garch])
     else:
-        cop = GaussianCopula.fit(returns.values)
+        innovations = returns.values
+    marginals = [fit_student_t(innovations[:, j]) for j in range(len(tickers))]
+    if cfg.simulation.dependence == "student_t_copula":
+        cop: GaussianCopula | StudentTCopula = StudentTCopula.fit(innovations)
+    else:
+        cop = GaussianCopula.fit(innovations)
     regime = (
         fit_markov_2state(returns.mean(axis=1))
         if cfg.simulation.regime == "markov_2state"
@@ -93,7 +102,7 @@ def fit_models(returns: pd.DataFrame, cfg: EngineConfig) -> FittedModels:
                 if mask.sum() < min_obs:
                     cops = []  # bail out, not enough data
                     break
-                sub = returns.values[mask]
+                sub = innovations[mask]
                 if cfg.simulation.dependence == "student_t_copula":
                     cops.append(StudentTCopula.fit(sub))
                 else:
@@ -150,11 +159,11 @@ class MonteCarloEngine:
             h_prev = np.tile(sigmas**2, (n_paths, 1))
             eps_prev = np.zeros((n_paths, n_assets))
 
-        # 2. Regime states (one Markov chain per path).
+        # 2. Regime states (one Markov chain per path), starting from today's estimated
+        #    regime probabilities unless configured to start from the long-run mix.
         if m.regime is not None:
-            regime_states = np.stack(
-                [m.regime.simulate_states(horizon, rng) for _ in range(n_paths)]
-            )
+            start = m.regime.current_probs() if cfg.simulation.regime_start == "current" else None
+            regime_states = m.regime.simulate_paths(n_paths, horizon, rng, start_probs=start)
             crisis = m.regime.crisis_state
             crisis_mult = float(m.regime.sigmas[crisis] / m.regime.sigmas[1 - crisis])
         else:

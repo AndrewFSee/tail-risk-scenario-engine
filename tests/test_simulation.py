@@ -85,3 +85,51 @@ def test_garch_drift_is_sample_mean_not_t_location():
     sim = MonteCarloEngine(cfg, fit_models(rets, cfg)).run()
     simulated = sim.asset_returns.sum(axis=1).mean()
     assert simulated == pytest.approx(horizon * rets["A"].mean(), abs=0.004)
+
+
+def _garch_returns(n: int = 3000, seed: int = 5) -> pd.DataFrame:
+    """Two assets with volatility clustering and moderately fat innovations (t, df 6)."""
+    rng = np.random.default_rng(seed)
+    out = {}
+    for name, (w, a, b) in {"A": (2e-6, 0.09, 0.89), "B": (1e-6, 0.06, 0.92)}.items():
+        h, e, r = w / (1 - a - b), 0.0, []
+        for _ in range(n):
+            h = w + a * e**2 + b * h
+            e = np.sqrt(h) * rng.standard_t(6) * np.sqrt(4 / 6)
+            r.append(e)
+        out[name] = r
+    return pd.DataFrame(out)
+
+
+def test_garch_marginals_fit_on_standardized_residuals():
+    """Regression: marginals fitted on raw returns double-count the fat tails that GARCH
+    already produces (df near 2 => infinite kurtosis and exploding simulated tails)."""
+    from tailrisk.models import fit_student_t
+
+    rets = _garch_returns()
+    cfg = EngineConfig(
+        portfolio=PortfolioConfig(tickers=["A", "B"], weights=[0.5, 0.5], start="2020-01-01"),
+        simulation=SimulationConfig(marginal="student_t", volatility="garch", regime="none",
+                                    dependence="gaussian"),
+    )
+    models = fit_models(rets, cfg)
+    raw_df = fit_student_t(rets["A"].values).df
+    assert models.marginals[0].df > raw_df + 1          # thinner than the raw-return fit
+    assert 4 < models.marginals[0].df < 12               # near the true innovation df (6)
+    assert models.garch[0].std_resid.shape == (len(rets),)
+
+
+def test_regime_paths_start_from_given_probabilities():
+    from tailrisk.models import RegimeFit
+
+    r = RegimeFit(means=np.zeros(2), sigmas=np.array([0.01, 0.03]),
+                  transition=np.array([[0.98, 0.02], [0.10, 0.90]]), smoothed_probs=np.array([[0.99, 0.01]]))
+    rng = np.random.default_rng(0)
+    calm = r.simulate_paths(20_000, 21, rng, start_probs=r.current_probs())
+    assert calm[:, 0].mean() == pytest.approx(0.01, abs=0.005)        # today, not the long-run 1/6
+    long_run = r.simulate_paths(20_000, 21, rng)
+    assert long_run[:, 0].mean() == pytest.approx(r.stationary_distribution()[1], abs=0.01)
+    # transitions follow the matrix
+    prev, nxt = long_run[:, :-1].ravel(), long_run[:, 1:].ravel()
+    assert nxt[prev == 0].mean() == pytest.approx(0.02, abs=0.003)
+    assert nxt[prev == 1].mean() == pytest.approx(0.90, abs=0.01)

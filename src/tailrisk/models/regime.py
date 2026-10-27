@@ -50,6 +50,37 @@ class RegimeFit:
         return states
 
 
+    def current_probs(self) -> np.ndarray:
+        """Regime probabilities on the last fitted day (smoothed == filtered there)."""
+        return np.asarray(self.smoothed_probs[-1], dtype=float)
+
+    def simulate_paths(
+        self,
+        n_paths: int,
+        horizon: int,
+        rng: np.random.Generator,
+        start_probs: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Simulate ``n_paths`` regime chains at once, shape (n_paths, horizon).
+
+        Each chain starts from ``start_probs`` (default: the long-run distribution).
+        For a forecast from today pass ``current_probs()``: starting from the long-run
+        mix puts ~20% of paths in crisis on day one whatever today looks like.
+        """
+        p0 = self.stationary_distribution() if start_probs is None else np.asarray(start_probs, dtype=float)
+        p0 = p0 / p0.sum()
+        u = rng.random((n_paths, horizon))
+        states = np.empty((n_paths, horizon), dtype=np.int64)
+        states[:, 0] = (u[:, 0] >= p0[0]).astype(np.int64)
+        stay0 = self.transition[0, 0]
+        stay1 = self.transition[1, 1]
+        for t in range(1, horizon):
+            prev = states[:, t - 1]
+            go_to_1 = np.where(prev == 0, u[:, t] >= stay0, u[:, t] < stay1)
+            states[:, t] = go_to_1.astype(np.int64)
+        return states
+
+
 def fit_markov_2state(returns: pd.Series | np.ndarray) -> RegimeFit:
     """Fit a 2-state Markov-switching model with switching mean and variance."""
     from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
